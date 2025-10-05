@@ -1127,3 +1127,9 @@ func getCommonParentsWorker(componentGroups [][]string, minComponents int, optio
 
 	return [][]string{componentGroups[0][:maxDepth]}
 }
+
+func StartsWithDirectory(fileName string, directoryName string, useCaseSensitiveFileNames bool) bool {
+	canonicalFileName := GetCanonicalFileName(fileName, useCaseSensitiveFileNames)
+	canonicalDirectoryName := GetCanonicalFileName(directoryName, useCaseSensitiveFileNames)
+	return strings.HasPrefix(canonicalFileName, canonicalDirectoryName+"/") || strings.HasPrefix(canonicalFileName, canonicalDirectoryName+"\\")
+}

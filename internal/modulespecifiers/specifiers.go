@@ -280,36 +280,50 @@ func GetEachFileNameOfModule(
 		}
 	}
 
-	// !!! TODO: Symlink directory handling
-	// const symlinkedDirectories = host.getSymlinkCache?.().getSymlinkedDirectoriesByRealpath();
-	// const fullImportedFileName = getNormalizedAbsolutePath(importedFileName, cwd);
-	// const result = symlinkedDirectories && forEachAncestorDirectoryStoppingAtGlobalCache(
-	//     host,
-	//     getDirectoryPath(fullImportedFileName),
-	//     realPathDirectory => {
-	//         const symlinkDirectories = symlinkedDirectories.get(ensureTrailingDirectorySeparator(toPath(realPathDirectory, cwd, getCanonicalFileName)));
-	//         if (!symlinkDirectories) return undefined; // Continue to ancestor directory
+	symlinkedDirectories := host.GetSymlinkCache().DirectoriesByRealpath()
+	fullImportedFileName := tspath.GetNormalizedAbsolutePath(importedFileName, cwd)
+	if symlinkedDirectories != nil {
+		tspath.ForEachAncestorDirectoryStoppingAtGlobalCache(
+			host.GetGlobalTypingsCacheLocation(),
+			tspath.GetDirectoryPath(fullImportedFileName),
+			func(realPathDirectory string) (bool, bool) {
+				symlinkDirectories := symlinkedDirectories.Get(tspath.ToPath(realPathDirectory, cwd, host.UseCaseSensitiveFileNames()).EnsureTrailingDirectorySeparator())
+				if symlinkDirectories == nil {
+					return false, false
+				} // Continue to ancestor directory
 
-	//         // Don't want to a package to globally import from itself (importNameCodeFix_symlink_own_package.ts)
-	//         if (startsWithDirectory(importingFileName, realPathDirectory, getCanonicalFileName)) {
-	//             return false; // Stop search, each ancestor directory will also hit this condition
-	//         }
+				// Don't want to a package to globally import from itself (importNameCodeFix_symlink_own_package.ts)
+				if tspath.StartsWithDirectory(importingFileName, realPathDirectory, host.UseCaseSensitiveFileNames()) {
+					return false, true // Stop search, each ancestor directory will also hit this condition
+				}
 
-	//         return forEach(targets, target => {
-	//             if (!startsWithDirectory(target, realPathDirectory, getCanonicalFileName)) {
-	//                 return;
-	//             }
+				for _, target := range targets {
+					if !tspath.StartsWithDirectory(target, realPathDirectory, host.UseCaseSensitiveFileNames()) {
+						continue
+					}
 
-	//             const relative = getRelativePathFromDirectory(realPathDirectory, target, getCanonicalFileName);
-	//             for (const symlinkDirectory of symlinkDirectories) {
-	//                 const option = resolvePath(symlinkDirectory, relative);
-	//                 const result = cb(option, target === referenceRedirect);
-	//                 shouldFilterIgnoredPaths = true; // We found a non-ignored path in symlinks, so we can reject ignored-path realpaths
-	//                 if (result) return result;
-	//             }
-	//         });
-	//     },
-	// );
+					relative := tspath.GetRelativePathFromDirectory(
+						realPathDirectory,
+						target,
+						tspath.ComparePathsOptions{
+							UseCaseSensitiveFileNames: host.UseCaseSensitiveFileNames(),
+							CurrentDirectory:          cwd,
+						})
+					for _, symlinkDirectory := range symlinkDirectories {
+						option := tspath.ResolvePath(symlinkDirectory, relative)
+						results = append(results, ModulePath{
+							FileName:        option,
+							IsInNodeModules: ContainsNodeModules(option),
+							IsRedirect:      target == referenceRedirect,
+						})
+						shouldFilterIgnoredPaths = true // We found a non-ignored path in symlinks, so we can reject ignored-path realpaths
+					}
+				}
+
+				return false, false
+			},
+		)
+	}
 
 	if preferSymlinks {
 		for _, p := range targets {
