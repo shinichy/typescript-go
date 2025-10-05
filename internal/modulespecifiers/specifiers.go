@@ -281,6 +281,7 @@ func GetEachFileNameOfModule(
 	}
 
 	// !!! TODO: Symlink directory handling
+	host.GetSymlinkCache()
 	// const symlinkedDirectories = host.getSymlinkCache?.().getSymlinkedDirectoriesByRealpath();
 	// const fullImportedFileName = getNormalizedAbsolutePath(importedFileName, cwd);
 	// const result = symlinkedDirectories && forEachAncestorDirectoryStoppingAtGlobalCache(

@@ -23,6 +23,7 @@ import (
 	"github.com/microsoft/typescript-go/internal/printer"
 	"github.com/microsoft/typescript-go/internal/scanner"
 	"github.com/microsoft/typescript-go/internal/sourcemap"
+	"github.com/microsoft/typescript-go/internal/symlinks"
 	"github.com/microsoft/typescript-go/internal/tsoptions"
 	"github.com/microsoft/typescript-go/internal/tspath"
 )
@@ -66,6 +67,7 @@ type Program struct {
 	// Cached unresolved imports for ATA
 	unresolvedImportsOnce sync.Once
 	unresolvedImports     *collections.Set[string]
+	knownSymlinks         *symlinks.KnownSymlinks
 }
 
 // FileExists implements checker.Program.
@@ -1624,6 +1626,34 @@ func (p *Program) SourceFileMayBeEmitted(sourceFile *ast.SourceFile, forceDtsEmi
 	return sourceFileMayBeEmitted(sourceFile, p, forceDtsEmit)
 }
 
+// todo: implement
+func (p *Program) GetSymlinkCache() *symlinks.KnownSymlinks {
+	// if p.knownSymlinks == nil {
+	// 	p.knownSymlinks = symlinks.NewKnownSymlink(p.currentDirectory, core.CreateGetCanonicalFileName(p.host.fs.fs.UseCaseSensitiveFileNames()))
+	// }
+	// if p.Program != nil && !p.knownSymlinks.HasProcessedResolutions {
+	// 	p.knownSymlinks.SetSymlinksFromResolutions(
+	// 		p.Program.ForEachResolvedModule,
+	// 		p.Program.ForEachResolvedTypeReferenceDirective,
+	// 		p.Program.GetAutomaticTypeDirectiveResolutions(),
+	// 	)
+	// }
+	return p.knownSymlinks
+}
+
+//	getSymlinkCache(): SymlinkCache {
+//	    if (!this.symlinks) {
+//	        this.symlinks = createSymlinkCache(this.getCurrentDirectory(), this.getCanonicalFileName);
+//	    }
+//	    if (this.program && !this.symlinks.hasProcessedResolutions()) {
+//	        this.symlinks.setSymlinksFromResolutions(
+//	            this.program.forEachResolvedModule,
+//	            this.program.forEachResolvedTypeReferenceDirective,
+//	            this.program.getAutomaticTypeDirectiveResolutions(),
+//	        );
+//	    }
+//	    return this.symlinks;
+//	}
 var plainJSErrors = collections.NewSetFromItems(
 	// binder errors
 	diagnostics.Cannot_redeclare_block_scoped_variable_0.Code(),
