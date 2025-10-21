@@ -478,7 +478,7 @@ func (ch *Checker) trySymbolTable(
 		if symbolFromSymbolTable.Flags&ast.SymbolFlagsAlias != 0 &&
 			symbolFromSymbolTable.Name != ast.InternalSymbolNameExportEquals &&
 			symbolFromSymbolTable.Name != ast.InternalSymbolNameDefault &&
-			!(isUMDExportSymbol(symbolFromSymbolTable) && ctx.enclosingDeclaration != nil && ast.IsExternalModule(ast.GetSourceFileOfNode(ctx.enclosingDeclaration))) &&
+			!(IsUMDExportSymbol(symbolFromSymbolTable) && ctx.enclosingDeclaration != nil && ast.IsExternalModule(ast.GetSourceFileOfNode(ctx.enclosingDeclaration))) &&
 			// If `!useOnlyExternalAliasing`, we can use any type of alias to get the name
 			(!ctx.useOnlyExternalAliasing || core.Some(symbolFromSymbolTable.Declarations, ast.IsExternalModuleImportEqualsDeclaration)) &&
 			// If we're looking up a local name to reference directly, omit namespace reexports, otherwise when we're trawling through an export list to make a dotted name, we can keep it
@@ -529,7 +529,7 @@ func (ch *Checker) compareSymbolChainsWorker(a []*ast.Symbol, b []*ast.Symbol) i
 	return 0
 }
 
-func isUMDExportSymbol(symbol *ast.Symbol) bool {
+func IsUMDExportSymbol(symbol *ast.Symbol) bool {
 	return symbol != nil && len(symbol.Declarations) > 0 && symbol.Declarations[0] != nil && ast.IsNamespaceExportDeclaration(symbol.Declarations[0])
 }
 
@@ -630,7 +630,7 @@ func (ch *Checker) needsQualification(symbol *ast.Symbol, enclosingDeclaration *
 		}
 		flags := symbolFromSymbolTable.Flags
 		if shouldResolveAlias {
-			flags = ch.getSymbolFlags(symbolFromSymbolTable)
+			flags = ch.GetSymbolFlags(symbolFromSymbolTable)
 		}
 		if flags&meaning != 0 {
 			qualify = true
