@@ -488,6 +488,7 @@ var handlers = sync.OnceValue(func() handlerMap {
 	registerLanguageServiceDocumentRequestHandler(handlers, lsproto.TextDocumentRenameInfo, (*Server).handleRename)
 	registerLanguageServiceDocumentRequestHandler(handlers, lsproto.TextDocumentDocumentHighlightInfo, (*Server).handleDocumentHighlight)
 	registerLanguageServiceDocumentRequestHandler(handlers, lsproto.TextDocumentSelectionRangeInfo, (*Server).handleSelectionRange)
+	registerLanguageServiceDocumentRequestHandler(handlers, lsproto.TextDocumentCodeActionInfo, (*Server).handleCodeAction)
 	registerRequestHandler(handlers, lsproto.WorkspaceSymbolInfo, (*Server).handleWorkspaceSymbol)
 	registerRequestHandler(handlers, lsproto.CompletionItemResolveInfo, (*Server).handleCompletionItemResolve)
 
@@ -669,6 +670,13 @@ func (s *Server) handleInitialize(ctx context.Context, params *lsproto.Initializ
 			},
 			SelectionRangeProvider: &lsproto.BooleanOrSelectionRangeOptionsOrSelectionRangeRegistrationOptions{
 				Boolean: ptrTo(true),
+			},
+			CodeActionProvider: &lsproto.BooleanOrCodeActionOptions{
+				CodeActionOptions: &lsproto.CodeActionOptions{
+					CodeActionKinds: &[]lsproto.CodeActionKind{
+						lsproto.CodeActionKindQuickFix,
+					},
+				},
 			},
 		},
 	}
@@ -910,6 +918,18 @@ func (s *Server) handleDocumentHighlight(ctx context.Context, ls *ls.LanguageSer
 
 func (s *Server) handleSelectionRange(ctx context.Context, ls *ls.LanguageService, params *lsproto.SelectionRangeParams) (lsproto.SelectionRangeResponse, error) {
 	return ls.ProvideSelectionRanges(ctx, params)
+}
+
+func (s *Server) handleCodeAction(ctx context.Context, languageService *ls.LanguageService, params *lsproto.CodeActionParams) (lsproto.CodeActionResponse, error) {
+	diagnostics := params.Context.Diagnostics
+	if len(diagnostics) == 0 {
+		return lsproto.CommandOrCodeActionArrayOrNull{}, nil
+	}
+	errorCode := diagnostics[0].Code.Integer
+	if errorCode == nil {
+		return lsproto.CommandOrCodeActionArrayOrNull{}, nil
+	}
+	return languageService.ProvideCodeActions(ctx, params.TextDocumentURI(), params.Range, *errorCode)
 }
 
 func (s *Server) Log(msg ...any) {

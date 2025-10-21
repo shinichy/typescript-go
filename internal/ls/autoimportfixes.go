@@ -1,13 +1,20 @@
 package ls
 
 import (
+	"context"
 	"slices"
+	"sort"
 
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/astnav"
+	"github.com/microsoft/typescript-go/internal/checker"
+	"github.com/microsoft/typescript-go/internal/compiler"
 	"github.com/microsoft/typescript-go/internal/core"
 	"github.com/microsoft/typescript-go/internal/debug"
+	"github.com/microsoft/typescript-go/internal/diagnostics"
+	"github.com/microsoft/typescript-go/internal/scanner"
 	"github.com/microsoft/typescript-go/internal/stringutil"
+	"github.com/microsoft/typescript-go/internal/tspath"
 )
 
 type Import struct {
@@ -15,6 +22,13 @@ type Import struct {
 	kind          ImportKind // ImportKindCommonJS | ImportKindNamespace
 	addAsTypeOnly AddAsTypeOnly
 	propertyName  string // Use when needing to generate an `ImportSpecifier with a `propertyName`; the name preceding "as" keyword (propertyName = "" when "as" is absent)
+}
+
+type FixInfo struct {
+	fix                 *ImportFix
+	symbolName          string
+	errorIdentifierText *string
+	isJsxNamespaceFix   *bool
 }
 
 func (ct *changeTracker) addNamespaceQualifier(sourceFile *ast.SourceFile, qualification *Qualification) {
@@ -337,4 +351,232 @@ func needsTypeOnly(addAsTypeOnly AddAsTypeOnly) bool {
 
 func shouldUseTypeOnly(addAsTypeOnly AddAsTypeOnly, preferences *UserPreferences) bool {
 	return needsTypeOnly(addAsTypeOnly) || addAsTypeOnly != AddAsTypeOnlyNotAllowed && preferences.PreferTypeOnlyAutoImports
+}
+
+func (l *LanguageService) getFixInfos(
+	ctx context.Context,
+	errorCode int32,
+	sourceFile *ast.SourceFile,
+	position int,
+) []*FixInfo {
+	ch, done := l.GetProgram().GetTypeCheckerForFile(ctx, sourceFile)
+	defer done()
+
+	symbolToken := astnav.GetTokenAtPosition(sourceFile, position)
+	var info []*FixInfo
+
+	if errorCode == diagnostics.X_0_refers_to_a_UMD_global_but_the_current_file_is_a_module_Consider_adding_an_import_instead.Code() {
+		info = l.getFixesInfoForUMDImport(ch, sourceFile, symbolToken)
+	} else if !ast.IsIdentifier(symbolToken) {
+		return []*FixInfo{}
+	} else if errorCode == diagnostics.X_0_cannot_be_used_as_a_value_because_it_was_imported_using_import_type.Code() {
+		symbolName := getSymbolNamesToImport(sourceFile, ch, symbolToken, l.GetProgram().Options())[0]
+		fix := getTypeOnlyPromotionFix(ch, sourceFile, symbolToken, symbolName)
+		return []*FixInfo{{fix: fix, symbolName: symbolName, errorIdentifierText: ptrTo(symbolToken.Text())}}
+	} else {
+		info = l.getFixesInfoForNonUMDImport(ctx, ch, sourceFile, symbolToken.AsIdentifier())
+	}
+
+	packageJsonImportFilter := l.createPackageJsonImportFilter(sourceFile)
+	return l.sortFixInfo(info, sourceFile, l.program, packageJsonImportFilter)
+}
+
+func (l *LanguageService) sortFixInfo(fixes []*FixInfo, sourceFile *ast.SourceFile, program *compiler.Program, packageJsonImportFilter *packageJsonImportFilter) []*FixInfo {
+	_toPath := func(fileName string) tspath.Path {
+		return tspath.ToPath(fileName, program.GetCurrentDirectory(), program.UseCaseSensitiveFileNames())
+	}
+	sort.Slice(fixes, func(i, j int) bool {
+		return compareBooleans(
+			fixes[i].isJsxNamespaceFix != nil && *fixes[i].isJsxNamespaceFix,
+			fixes[j].isJsxNamespaceFix != nil && *fixes[j].isJsxNamespaceFix) < 0 ||
+			compareValues(int(fixes[i].fix.kind), int(fixes[j].fix.kind)) < 0 ||
+			l.compareModuleSpecifiers(fixes[i].fix, fixes[j].fix, sourceFile, packageJsonImportFilter.allowsImportingSpecifier, _toPath) < 0
+	})
+	return fixes
+}
+
+func (l *LanguageService) getFixesInfoForUMDImport(
+	ch *checker.Checker,
+	sourceFile *ast.SourceFile,
+	token *ast.Node,
+) []*FixInfo {
+	umdSymbol := getUmdSymbol(token, ch)
+	if umdSymbol == nil {
+		return []*FixInfo{}
+	}
+	symbol := ch.GetAliasedSymbol(umdSymbol)
+	symbolName := umdSymbol.Name
+	exportInfo := []*SymbolExportInfo{{
+		symbol:            umdSymbol,
+		moduleSymbol:      symbol,
+		moduleFileName:    "",
+		exportKind:        ExportKindUMD,
+		targetFlags:       symbol.Flags,
+		isFromPackageJson: false,
+	}}
+	useRequire := getShouldUseRequire(sourceFile, l.GetProgram())
+	// `usagePosition` is undefined because `token` may not actually be a usage of the symbol we're importing.
+	// For example, we might need to import `React` in order to use an arbitrary JSX tag. We could send a position
+	// for other UMD imports, but `usagePosition` is currently only used to insert a namespace qualification
+	// before a named import, like converting `writeFile` to `fs.writeFile` (whether `fs` is already imported or
+	// not), and this function will only be called for UMD symbols, which are necessarily an `export =`, not a
+	// named export.
+	_, fixes := l.getImportFixes(
+		ch,
+		exportInfo,
+		nil,          /* usagePosition */
+		ptrTo(false), /* isValidTypeOnlyUseSite */
+		ptrTo(useRequire),
+		sourceFile,
+		false, /* fromCacheOnly */
+	)
+	result := []*FixInfo{}
+	for _, fix := range fixes {
+		var errorIdentifierText *string
+		if ast.IsIdentifier(token) {
+			errorIdentifierText = ptrTo(token.AsIdentifier().Text)
+		}
+		result = append(result, &FixInfo{
+			fix:                 fix,
+			symbolName:          symbolName,
+			errorIdentifierText: errorIdentifierText,
+		})
+	}
+	return result
+}
+
+func getUmdSymbol(token *ast.Node, ch *checker.Checker) *ast.Symbol {
+	// try the identifier to see if it is the umd symbol
+	var umdSymbol *ast.Symbol
+	if ast.IsIdentifier(token) {
+		umdSymbol = ch.GetSymbolAtLocation(token)
+	}
+	if checker.IsUMDExportSymbol(umdSymbol) {
+		return umdSymbol
+	}
+
+	// The error wasn't for the symbolAtLocation, it was for the JSX tag itself, which needs access to e.g. `React`.
+	parent := token.Parent
+	if (ast.IsJsxOpeningLikeElement(parent) && parent.TagName() == token) || ast.IsJsxOpeningFragment(parent) {
+		var location *ast.Node
+		if ast.IsJsxOpeningFragment(parent) {
+			location = token
+		} else {
+			location = parent
+		}
+		parentSymbol := ch.ResolveName(
+			ch.GetJsxNamespace(parent),
+			location,
+			ast.SymbolFlagsValue,
+			/*excludeGlobals*/ false,
+		)
+		if checker.IsUMDExportSymbol(parentSymbol) {
+			return parentSymbol
+		}
+	}
+	return nil
+}
+
+func (l *LanguageService) getFixesInfoForNonUMDImport(
+	ctx context.Context,
+	ch *checker.Checker,
+	sourceFile *ast.SourceFile,
+	symbolToken *ast.Identifier,
+) []*FixInfo {
+	symbolName := symbolToken.Text
+	// "default" is a keyword and not a legal identifier for the import, but appears as an identifier.
+	if symbolName == ast.InternalSymbolNameDefault {
+		return []*FixInfo{}
+	}
+	isValidTypeOnlyUseSite := ast.IsValidTypeOnlyAliasUseSite(symbolToken.AsNode())
+	useRequire := getShouldUseRequire(sourceFile, l.GetProgram())
+	exportInfosMap := l.getExportInfosMap(symbolName, ast.IsJsxTagName(symbolToken.AsNode()), getMeaningFromLocation(symbolToken.AsNode()), sourceFile, ctx, ch, l.GetProgram().Options())
+	result := []*FixInfo{}
+	for values := range exportInfosMap.Values() {
+		_, fixes := l.getImportFixes(ch,
+			values,
+			ptrTo(l.converters.PositionToLineAndCharacter(sourceFile, core.TextPos(symbolToken.Loc.Pos()))),
+			ptrTo(isValidTypeOnlyUseSite),
+			ptrTo(useRequire),
+			sourceFile,
+			false /* fromCacheOnly */)
+		for _, fix := range fixes {
+			result = append(result, &FixInfo{
+				fix:                 fix,
+				symbolName:          symbolName,
+				errorIdentifierText: ptrTo(symbolToken.Text),
+				isJsxNamespaceFix:   ptrTo(symbolName != symbolToken.Text),
+			})
+		}
+	}
+	return result
+}
+
+func getTypeOnlyPromotionFix(ch *checker.Checker, sourceFile *ast.SourceFile, symbolToken *ast.IdentifierNode, symbolName string) *ImportFix /*FixPromoteTypeOnlyImport*/ {
+	symbol := ch.ResolveName(
+		symbolName,
+		symbolToken,
+		ast.SymbolFlagsValue,
+		/*excludeGlobals*/ true,
+	)
+	if symbol == nil {
+		return nil
+	}
+
+	typeOnlyAliasDeclaration := ch.GetTypeOnlyAliasDeclaration(symbol)
+	if typeOnlyAliasDeclaration == nil || ast.GetSourceFileOfNode(typeOnlyAliasDeclaration) != sourceFile {
+		return nil
+	}
+
+	return getNewPromoteTypeOnlyImport(typeOnlyAliasDeclaration)
+}
+
+func getSymbolNamesToImport(sourceFile *ast.SourceFile, ch *checker.Checker, symbolToken *ast.IdentifierNode, compilerOptions *core.CompilerOptions) []string {
+	parent := symbolToken.Parent
+	if (ast.IsJsxOpeningLikeElement(parent) || ast.IsJsxClosingElement(parent)) && parent.TagName() == symbolToken && jsxModeNeedsExplicitImport(compilerOptions.Jsx) {
+		jsxNamespace := ch.GetJsxNamespace(sourceFile.AsNode())
+		if needsJsxNamespaceFix(jsxNamespace, symbolToken, ch) {
+			needsComponentNameFix := !scanner.IsIntrinsicJsxName(symbolToken.Text()) && ch.ResolveName(
+				symbolToken.Text(),
+				symbolToken,
+				ast.SymbolFlagsValue,
+				/*excludeGlobals*/ false,
+			) == nil
+			if needsComponentNameFix {
+				return []string{symbolToken.Text(), jsxNamespace}
+			}
+			return []string{jsxNamespace}
+		}
+	}
+	return []string{symbolToken.Text()}
+}
+
+func jsxModeNeedsExplicitImport(jsx core.JsxEmit) bool {
+	return jsx == core.JsxEmitReact || jsx == core.JsxEmitReactNative
+}
+
+func needsJsxNamespaceFix(jsxNamespace string, symbolToken *ast.IdentifierNode, ch *checker.Checker) bool {
+	if scanner.IsIntrinsicJsxName(symbolToken.Text()) {
+		return true // If we were triggered by a matching error code on an intrinsic, the error must have been about missing the JSX factory
+	}
+	namespaceSymbol := ch.ResolveName(
+		jsxNamespace,
+		symbolToken,
+		ast.SymbolFlagsValue,
+		/*excludeGlobals*/ true,
+	)
+	return namespaceSymbol == nil || core.Some(namespaceSymbol.Declarations, func(decl *ast.Node) bool {
+		return ast.IsTypeOnlyImportOrExportDeclaration(decl)
+	}) && (namespaceSymbol.Flags&ast.SymbolFlagsValue) == 0
+}
+
+// Compare two numeric values for their order relative to each other.
+func compareValues(a, b int) int {
+	if a == b {
+		return 0
+	}
+	if a < b {
+		return -1
+	}
+	return 1
 }

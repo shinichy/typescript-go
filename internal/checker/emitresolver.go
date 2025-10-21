@@ -682,7 +682,7 @@ func (r *emitResolver) IsReferencedAliasDeclaration(node *ast.Node) bool {
 			}
 			target := aliasLinks.aliasTarget
 			if target != nil && node.ModifierFlags()&ast.ModifierFlagsExport != 0 &&
-				c.getSymbolFlags(target)&ast.SymbolFlagsValue != 0 &&
+				c.GetSymbolFlags(target)&ast.SymbolFlagsValue != 0 &&
 				(c.compilerOptions.ShouldPreserveConstEnums() || !isConstEnumOrConstEnumOnlyModule(target)) {
 				return true
 			}

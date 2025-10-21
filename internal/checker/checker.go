@@ -1601,7 +1601,7 @@ func (c *Checker) checkAndReportErrorForUsingTypeAsValue(errorLocation *ast.Node
 		}
 		symbol := c.resolveSymbol(c.resolveName(errorLocation, name, ast.SymbolFlagsType & ^ast.SymbolFlagsValue, nil /*nameNotFoundMessage*/, false /*isUse*/, false /*excludeGlobals*/))
 		if symbol != nil {
-			allFlags := c.getSymbolFlags(symbol)
+			allFlags := c.GetSymbolFlags(symbol)
 			if allFlags&ast.SymbolFlagsValue == 0 {
 				if isES2015OrLaterConstructorName(name) {
 					c.error(errorLocation, diagnostics.X_0_only_refers_to_a_type_but_is_being_used_as_a_value_here_Do_you_need_to_change_your_target_library_Try_changing_the_lib_compiler_option_to_es2015_or_later, name)
@@ -2058,7 +2058,7 @@ func (c *Checker) getTypeOnlyAliasDeclarationEx(symbol *ast.Symbol, include ast.
 		} else {
 			resolved = c.resolveAlias(links.typeOnlyDeclaration.Symbol())
 		}
-		if c.getSymbolFlags(resolved)&include != 0 {
+		if c.GetSymbolFlags(resolved)&include != 0 {
 			return links.typeOnlyDeclaration
 		}
 	}
@@ -2095,7 +2095,7 @@ func (c *Checker) getSymbol(symbols ast.SymbolTable, name string, meaning ast.Sy
 				return symbol
 			}
 			if symbol.Flags&ast.SymbolFlagsAlias != 0 {
-				targetFlags := c.getSymbolFlags(symbol)
+				targetFlags := c.GetSymbolFlags(symbol)
 				// `targetFlags` will be `SymbolFlags.All` if an error occurred in alias resolution; this avoids cascading errors
 				if targetFlags&meaning != 0 {
 					return symbol
@@ -5242,7 +5242,7 @@ func (c *Checker) checkImportEqualsDeclaration(node *ast.Node) {
 		if !ast.IsExternalModuleReference(moduleReference) {
 			target := c.resolveAlias(c.getSymbolOfDeclaration(node))
 			if target != c.unknownSymbol {
-				targetFlags := c.getSymbolFlags(target)
+				targetFlags := c.GetSymbolFlags(target)
 				if targetFlags&ast.SymbolFlagsValue != 0 {
 					// Target is a value symbol, check that it is not hidden by a local declaration with the same name
 					moduleName := ast.GetFirstIdentifier(moduleReference)
@@ -5361,7 +5361,7 @@ func (c *Checker) checkExportAssignment(node *ast.Node) {
 			c.markLinkedReferences(node, ReferenceHintExportAssignment, nil, nil)
 			typeOnlyDeclaration := c.getTypeOnlyAliasDeclarationEx(sym, ast.SymbolFlagsValue)
 			// If not a value, we're interpreting the identifier as a type export, along the lines of (`export { Id as default }`)
-			if c.getSymbolFlags(sym)&ast.SymbolFlagsValue != 0 {
+			if c.GetSymbolFlags(sym)&ast.SymbolFlagsValue != 0 {
 				// However if it is a value, we need to check it's being used correctly
 				c.checkExpressionCached(id)
 				if !isIllegalExportDefaultInCJS && node.Flags&ast.NodeFlagsAmbient == 0 && c.compilerOptions.VerbatimModuleSyntax.IsTrue() && typeOnlyDeclaration != nil {
@@ -6470,7 +6470,7 @@ func (c *Checker) checkAliasSymbol(node *ast.Node) {
 		}
 		return
 	}
-	targetFlags := c.getSymbolFlags(target)
+	targetFlags := c.GetSymbolFlags(target)
 	excludedMeanings := core.IfElse(symbol.Flags&(ast.SymbolFlagsValue|ast.SymbolFlagsExportValue) != 0, ast.SymbolFlagsValue, 0) |
 		core.IfElse(symbol.Flags&ast.SymbolFlagsType != 0, ast.SymbolFlagsType, 0) |
 		core.IfElse(symbol.Flags&ast.SymbolFlagsNamespace != 0, ast.SymbolFlagsNamespace, 0)
@@ -15719,7 +15719,7 @@ func (c *Checker) resolveAliasWithDeprecationCheck(symbol *ast.Symbol, location 
  * @returns SymbolFlags.All if `symbol` is an alias that ultimately resolves to `unknown`;
  * combined flags of all alias targets otherwise.
  */
-func (c *Checker) getSymbolFlags(symbol *ast.Symbol) ast.SymbolFlags {
+func (c *Checker) GetSymbolFlags(symbol *ast.Symbol) ast.SymbolFlags {
 	return c.getSymbolFlagsEx(symbol, false /*excludeTypeOnlyMeanings*/, false /*excludeLocalMeanings*/)
 }
 
@@ -17889,7 +17889,7 @@ func (c *Checker) getTypeOfAlias(symbol *ast.Symbol) *Type {
 		// This check is important because without it, a call to getTypeOfSymbol could end
 		// up recursively calling getTypeOfAlias, causing a stack overflow.
 		if links.resolvedType == nil {
-			if c.getSymbolFlags(targetSymbol)&ast.SymbolFlagsValue != 0 {
+			if c.GetSymbolFlags(targetSymbol)&ast.SymbolFlagsValue != 0 {
 				links.resolvedType = c.getTypeOfSymbol(targetSymbol)
 			} else {
 				links.resolvedType = c.errorType
@@ -27562,7 +27562,7 @@ func (c *Checker) markExportSpecifierAliasReferenced(location *ast.ExportSpecifi
 			if target != nil && target.Flags&ast.SymbolFlagsAlias != 0 {
 				target = c.resolveAlias(target)
 			}
-			if target == nil || c.getSymbolFlags(target)&ast.SymbolFlagsValue != 0 {
+			if target == nil || c.GetSymbolFlags(target)&ast.SymbolFlagsValue != 0 {
 				c.markExportAsReferenced(location)            // marks export as used
 				c.markIdentifierAliasReferenced(exportedName) // marks target of export as used
 			}
@@ -27608,7 +27608,7 @@ func (c *Checker) markAliasSymbolAsReferenced(symbol *ast.Symbol) {
 		// This way a chain of imports can be elided if ultimately the final input is only used in a type
 		// position.
 		if ast.IsImportEqualsDeclaration(node) && node.AsImportEqualsDeclaration().ModuleReference.Kind != ast.KindExternalModuleReference {
-			if c.getSymbolFlags(c.resolveSymbol(symbol))&ast.SymbolFlagsValue != 0 {
+			if c.GetSymbolFlags(c.resolveSymbol(symbol))&ast.SymbolFlagsValue != 0 {
 				// import foo = <symbol>
 				left := ast.GetFirstIdentifier(node.AsImportEqualsDeclaration().ModuleReference)
 				c.markIdentifierAliasReferenced(left)
@@ -30918,4 +30918,8 @@ func (c *Checker) GetEmitResolver() *emitResolver {
 
 func (c *Checker) GetAliasedSymbol(symbol *ast.Symbol) *ast.Symbol {
 	return c.resolveAlias(symbol)
+}
+
+func (c *Checker) ResolveName(name string, location *ast.Node, meaning ast.SymbolFlags, excludeGlobals bool) *ast.Symbol {
+	return c.resolveName(location, name, meaning /*nameNotFoundMessage*/, nil /*isUse*/, false, excludeGlobals)
 }
