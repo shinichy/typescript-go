@@ -611,7 +611,7 @@ func processEnding(
 
 	jsPriority := slices.Index(allowedEndings, ModuleSpecifierEndingJsExtension)
 	tsPriority := slices.Index(allowedEndings, ModuleSpecifierEndingTsExtension)
-	if tspath.FileExtensionIsOneOf(fileName, []string{tspath.ExtensionMts, tspath.ExtensionCts}) && tsPriority < jsPriority {
+	if tspath.FileExtensionIsOneOf(fileName, []string{tspath.ExtensionMts, tspath.ExtensionCts}) && tsPriority != -1 && tsPriority < jsPriority {
 		return fileName
 	}
 	if tspath.FileExtensionIsOneOf(fileName, []string{tspath.ExtensionDmts, tspath.ExtensionMts, tspath.ExtensionDcts, tspath.ExtensionCts}) {
