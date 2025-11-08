@@ -1,0 +1,38 @@
+package fourslash_test
+
+import (
+	"testing"
+
+	"github.com/microsoft/typescript-go/internal/fourslash"
+	"github.com/microsoft/typescript-go/internal/testutil"
+)
+
+func TestImportNameCodeFix_order2(t *testing.T) {
+	t.Parallel()
+
+	defer testutil.RecoverAndFail(t, "Panic on fourslash test")
+	const content = `// @Filename: /a.ts
+export const _aB: number;
+export const _Ab: number;
+export const aB: number;
+export const Ab: number;
+// @Filename: /b.ts
+[|import {
+    _aB,
+    _Ab,
+    Ab,
+} from "./a";
+aB;|]
+// @Filename: /c.ts
+[|import {
+    _aB,
+    _Ab,
+    Ab,
+} from "./a";
+aB;|]`
+	f := fourslash.NewFourslash(t, nil /*capabilities*/, content)
+	f.GoToFile(t, "/b.ts")
+	f.VerifyImportFixAtPosition(t, []string{"import {\n    _aB,\n    _Ab,\n    Ab,\n    aB,\n} from \"./a\";\naB;"}, nil /*errorCode*/, nil /*preferences*/)
+	f.GoToFile(t, "/c.ts")
+	f.VerifyImportFixAtPosition(t, []string{"import {\n    _aB,\n    _Ab,\n    aB,\n    Ab,\n} from \"./a\";\naB;"}, nil /*errorCode*/, nil /*preferences*/)
+}

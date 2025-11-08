@@ -209,6 +209,8 @@ function parseFourslashStatement(statement: ts.Statement): Cmd[] | undefined {
                 case "renameInfoSucceeded":
                 case "renameInfoFailed":
                     return parseRenameInfo(func.text, callExpression.arguments);
+                case "importFixAtPosition":
+                    return parseImportFixAtPosition(callExpression.arguments);
             }
         }
         // `goTo....`
@@ -1549,6 +1551,63 @@ function parseSortText(expr: ts.Expression): string | undefined {
     }
 }
 
+function parseImportFixAtPosition(args: readonly ts.Expression[]): VerifyImportFixAtPosition[] | undefined {
+    if (args.length < 1 || args.length > 3) {
+        console.error(`Expected 1, 2, or 3 arguments in importFixAtPosition, got ${args.map(arg => arg.getText()).join(", ")}`);
+        return undefined;
+    }
+
+    let arg0;
+    if (!(arg0 = getArrayLiteralExpression(args[0]))) {
+        console.error(`Expected array literal for first argument in importFixAtPosition, got ${args[0].getText()}`);
+        return undefined;
+    }
+
+    let expectedTextArray = "[]string{";
+    for (const elem of arg0.elements) {
+        if (!ts.isStringLiteralLike(elem)) {
+            console.error(`Expected string literal in expected text array, got ${elem.getText()}`);
+            return undefined;
+        }
+        expectedTextArray += `${getGoStringLiteral(elem.text)}, `;
+    }
+    expectedTextArray += "}";
+
+    let errorCode = "nil /*errorCode*/";
+    let arg1;
+    if (args[1]) {
+        if (!(arg1 = getNumericLiteral(args[1])) && args[1].getText() !== "undefined") {
+            console.error(`Expected numeric literal for second argument in importFixAtPosition, got ${args[1].getText()}`);
+            return undefined;
+        }
+        if (arg1) {
+            errorCode = getGoStringLiteral(arg1.text);
+        }
+    }
+
+    let preferences = "nil /*preferences*/";
+    if (args[2]) {
+        let arg2;
+        if (!(arg2 = getObjectLiteralExpression(args[2]))) {
+            console.error(`Expected object literal for third argument in importFixAtPosition, got ${args[2].getText()}`);
+            return undefined;
+        }
+        const parsedPreferences = parseUserPreferences(arg2);
+        if (!parsedPreferences) {
+            console.error(`Unrecognized user preferences in importFixAtPosition: ${args[2].getText()}`);
+            return undefined;
+        }
+        preferences = parsedPreferences;
+    }
+
+    return [{
+        kind: "verifyImportFixAtPosition",
+        expectedTextArray,
+        errorCode,
+        preferences,
+    }];
+}
+
 interface VerifyCompletionsCmd {
     kind: "verifyCompletions";
     marker: string;
@@ -1643,6 +1702,13 @@ interface VerifyRenameInfoCmd {
     preferences: string;
 }
 
+interface VerifyImportFixAtPosition {
+    kind: "verifyImportFixAtPosition";
+    expectedTextArray: string;
+    errorCode: string;
+    preferences: string;
+}
+
 type Cmd =
     | VerifyCompletionsCmd
     | VerifyApplyCodeActionFromCompletionCmd
@@ -1656,7 +1722,8 @@ type Cmd =
     | EditCmd
     | VerifyQuickInfoCmd
     | VerifyBaselineRenameCmd
-    | VerifyRenameInfoCmd;
+    | VerifyRenameInfoCmd
+    | VerifyImportFixAtPosition;
 
 function generateVerifyCompletions({ marker, args, isNewIdentifierLocation, andApplyCodeActionArgs }: VerifyCompletionsCmd): string {
     let expectedList: string;
@@ -1753,6 +1820,10 @@ function generateBaselineRename({ kind, args, preferences }: VerifyBaselineRenam
     }
 }
 
+function generateImportFixAtPosition({ expectedTextArray, errorCode, preferences }: VerifyImportFixAtPosition): string {
+    return `f.VerifyImportFixAtPosition(t, ${expectedTextArray}, ${errorCode}, ${preferences})`;
+}
+
 function generateCmd(cmd: Cmd): string {
     switch (cmd.kind) {
         case "verifyCompletions":
@@ -1789,6 +1860,8 @@ function generateCmd(cmd: Cmd): string {
             return `f.VerifyRenameSucceeded(t, ${cmd.preferences})`;
         case "renameInfoFailed":
             return `f.VerifyRenameFailed(t, ${cmd.preferences})`;
+        case "verifyImportFixAtPosition":
+            return generateImportFixAtPosition(cmd);
         default:
             let neverCommand: never = cmd;
             throw new Error(`Unknown command kind: ${neverCommand as Cmd["kind"]}`);

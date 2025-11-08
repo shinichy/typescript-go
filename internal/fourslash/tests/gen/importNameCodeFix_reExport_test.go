@@ -1,0 +1,23 @@
+package fourslash_test
+
+import (
+	"testing"
+
+	"github.com/microsoft/typescript-go/internal/fourslash"
+	"github.com/microsoft/typescript-go/internal/testutil"
+)
+
+func TestImportNameCodeFix_reExport(t *testing.T) {
+	t.Parallel()
+
+	defer testutil.RecoverAndFail(t, "Panic on fourslash test")
+	const content = `// @Filename: /a.ts
+export default function foo(): void {}
+// @Filename: /b.ts
+export { default } from "./a";
+// @Filename: /user.ts
+[|foo;|]`
+	f := fourslash.NewFourslash(t, nil /*capabilities*/, content)
+	f.GoToFile(t, "/user.ts")
+	f.VerifyImportFixAtPosition(t, []string{"import foo from \"./a\";\n\nfoo;", "import foo from \"./b\";\n\nfoo;"}, nil /*errorCode*/, nil /*preferences*/)
+}

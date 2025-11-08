@@ -15,6 +15,7 @@ import (
 	"github.com/microsoft/typescript-go/internal/bundled"
 	"github.com/microsoft/typescript-go/internal/collections"
 	"github.com/microsoft/typescript-go/internal/core"
+	"github.com/microsoft/typescript-go/internal/debug"
 	"github.com/microsoft/typescript-go/internal/ls"
 	"github.com/microsoft/typescript-go/internal/lsp"
 	"github.com/microsoft/typescript-go/internal/lsp/lsproto"
@@ -2169,6 +2170,132 @@ func (f *FourslashTest) verifyBaselines(t *testing.T) {
 	for command, content := range f.baselines {
 		baseline.Run(t, getBaselineFileName(t, command), content.String(), getBaselineOptions(command))
 	}
+}
+
+func (f *FourslashTest) VerifyImportFixAtPosition(
+	t *testing.T,
+	expectedTextArray []string,
+	errorCode *int,
+	preferences *ls.UserPreferences,
+) {
+	ranges := core.Filter(f.Ranges(), func(r *RangeMarker) bool { return r.FileName() == f.activeFilename })
+	if len(ranges) > 1 {
+		t.Fatalf("Exactly one range should be specified in the testfile.")
+	}
+	selectedRange := (*RangeMarker)(nil)
+	if len(ranges) == 1 {
+		selectedRange = ranges[0]
+	}
+
+	if preferences != nil {
+		reset := f.ConfigureWithReset(t, preferences)
+		defer reset()
+	}
+
+	codeFixes := f.getCodeFixes(t, f.activeFilename, errorCode, preferences, nil)
+	if len(codeFixes) == 0 {
+		if len(expectedTextArray) != 0 {
+			t.Fatalf("No codefixes returned.")
+		}
+		return
+	}
+
+	var actualTextArray []string
+	scriptInfo := f.getScriptInfo(f.activeFilename)
+	originalContent := scriptInfo.content
+	for _, codeFix := range codeFixes {
+		debug.Assert(codeFix.Edit != nil)
+		debug.Assert(codeFix.Edit.Changes != nil)
+		debug.Assert(len(*codeFix.Edit.Changes) == 1)
+		debug.Assert((*codeFix.Edit.Changes)[ls.FileNameToDocumentURI(f.activeFilename)] != nil)
+		textEdits := (*codeFix.Edit.Changes)[ls.FileNameToDocumentURI(f.activeFilename)]
+		f.applyTextEdits(t, textEdits)
+		var text string
+		if selectedRange != nil {
+			text = f.getRangeText(selectedRange)
+		} else {
+			text = f.getScriptInfo(f.activeFilename).content
+		}
+		actualTextArray = append(actualTextArray, text)
+
+		// Undo changes to perform next fix
+		for _, textChange := range textEdits {
+			span := core.NewTextRange(
+				int(f.converters.LineAndCharacterToPosition(scriptInfo, textChange.Range.Start)),
+				int(f.converters.LineAndCharacterToPosition(scriptInfo, textChange.Range.End)),
+			)
+			deletedText := originalContent[span.Pos():span.End()]
+			insertedText := textChange.NewText
+			f.editScriptAndUpdateMarkers(t, f.activeFilename, span.Pos(), span.Pos()+len(insertedText), deletedText)
+		}
+	}
+	assert.Equal(t, len(actualTextArray), len(expectedTextArray), fmt.Sprintf("Expected %d import fixes, got %d:\n\n%s", len(expectedTextArray), len(actualTextArray), strings.Join(actualTextArray, "\n\n"+strings.Repeat("-", 20)+"\n\n")))
+	for index, expected := range expectedTextArray {
+		actual := actualTextArray[index]
+		assert.Equal(t, actual, expected, fmt.Sprintf("Import fix at index %d doesn't match.", index))
+	}
+}
+
+// Rerieves a codefix satisfying the parameters, or undefined if no such codefix is found.
+func (f *FourslashTest) getCodeFixes(
+	t *testing.T,
+	fileName string,
+	errorCode *int,
+	preferences *ls.UserPreferences,
+	position *int,
+) []*lsproto.CodeAction {
+	diagnostics := f.getDiagnostics(t, fileName)
+
+	script := f.getScriptInfo(f.activeFilename)
+	return core.FlatMap(core.Deduplicate(diagnostics), func(diagnostic *lsproto.Diagnostic) []*lsproto.CodeAction {
+		if errorCode != nil && int(*diagnostic.Code.Integer) != *errorCode {
+			return nil
+		}
+		if position != nil {
+			span := core.NewTextRange(
+				int(f.converters.LineAndCharacterToPosition(script, diagnostic.Range.Start)),
+				int(f.converters.LineAndCharacterToPosition(script, diagnostic.Range.End)),
+			)
+			if !span.ContainsInclusive(*position) {
+				return nil
+			}
+		}
+		params := &lsproto.CodeActionParams{
+			TextDocument: lsproto.TextDocumentIdentifier{
+				Uri: ls.FileNameToDocumentURI(fileName),
+			},
+			Range: diagnostic.Range,
+			Context: &lsproto.CodeActionContext{
+				Diagnostics: []*lsproto.Diagnostic{diagnostic},
+			},
+		}
+		resMsg, result, resultOk := sendRequest(t, f, lsproto.TextDocumentCodeActionInfo, params)
+		if resMsg == nil {
+			t.Fatalf("Nil response received for code action info request")
+		}
+		if !resultOk {
+			t.Fatalf("Unexpected response type for code action info request: %T", resMsg.AsResponse().Result)
+		}
+		return core.Map(*result.CommandOrCodeActionArray, func(actionOrCommand lsproto.CommandOrCodeAction) *lsproto.CodeAction {
+			return actionOrCommand.CodeAction
+		})
+	})
+}
+
+func (f *FourslashTest) getDiagnostics(t *testing.T, fileName string) []*lsproto.Diagnostic {
+	params := &lsproto.DocumentDiagnosticParams{
+		TextDocument: lsproto.TextDocumentIdentifier{
+			Uri: ls.FileNameToDocumentURI(fileName),
+		},
+	}
+	resMsg, result, resultOk := sendRequest(t, f, lsproto.TextDocumentDiagnosticInfo, params)
+	if resMsg == nil {
+		t.Fatalf("Nil response received for diagnostic request")
+	}
+	if !resultOk {
+		t.Fatalf("Unexpected response type for diagnostic request: %T", resMsg.AsResponse().Result)
+	}
+	return result.FullDocumentDiagnosticReport.Items
 }
 
 type anyTextEdits *[]*lsproto.TextEdit
