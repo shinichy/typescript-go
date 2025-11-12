@@ -13,6 +13,7 @@ type LanguageService struct {
 	program                 *compiler.Program
 	converters              *Converters
 	documentPositionMappers map[string]*sourcemap.DocumentPositionMapper
+	codeFixProvider         *CodeFixProvider
 }
 
 func NewLanguageService(
@@ -24,6 +25,7 @@ func NewLanguageService(
 		program:                 program,
 		converters:              host.Converters(),
 		documentPositionMappers: map[string]*sourcemap.DocumentPositionMapper{},
+		codeFixProvider:         NewCodeFixProvider(),
 	}
 }
 

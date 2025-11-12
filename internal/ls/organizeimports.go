@@ -3,6 +3,7 @@ package ls
 import (
 	"cmp"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
@@ -24,8 +25,8 @@ var (
 
 // statement = anyImportOrRequireStatement
 func getImportDeclarationInsertIndex(sortedImports []*ast.Statement, newImport *ast.Statement, comparer func(a, b *ast.Statement) int) int {
-	// !!!
-	return len(sortedImports)
+	index, _ := slices.BinarySearchFunc(sortedImports, newImport, comparer)
+	return index
 }
 
 // returns `-1` if `a` is better than `b`
@@ -65,9 +66,9 @@ func (l *LanguageService) compareModuleSpecifiers(
 // True > False
 func compareBooleans(a, b bool) int {
 	if a && !b {
-		return -1
-	} else if !a && b {
 		return 1
+	} else if !a && b {
+		return -1
 	}
 	return 0
 }

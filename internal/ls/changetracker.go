@@ -252,7 +252,7 @@ func (ct *changeTracker) insertNodeInListAfter(sourceFile *ast.SourceFile, after
 		multilineList = true
 	}
 
-	separatorString := scanner.TokenToString(separator)
+	separatorString := scanner.TokenToString(separator) + " "
 	end := ct.ls.converters.PositionToLineAndCharacter(sourceFile, core.TextPos(after.End()))
 	if !multilineList {
 		ct.replaceRange(sourceFile, lsproto.Range{Start: end, End: end}, newNode, changeNodeOptions{prefix: separatorString})
@@ -287,7 +287,7 @@ func (ct *changeTracker) insertImportSpecifierAtIndex(sourceFile *ast.SourceFile
 	namedImportsNode := namedImports.AsNamedImports()
 	elements := namedImportsNode.Elements.Nodes
 
-	if index > 0 && len(elements) > index {
+	if index > 0 && len(elements) > index - 1 {
 		ct.insertNodeInListAfter(sourceFile, elements[index-1], newSpecifier, elements)
 	} else {
 		// Insert before the first element

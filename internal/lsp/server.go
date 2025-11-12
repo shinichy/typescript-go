@@ -920,7 +920,7 @@ func (s *Server) handleSelectionRange(ctx context.Context, ls *ls.LanguageServic
 	return ls.ProvideSelectionRanges(ctx, params)
 }
 
-func (s *Server) handleCodeAction(ctx context.Context, languageService *ls.LanguageService, params *lsproto.CodeActionParams) (lsproto.CodeActionResponse, error) {
+func (s *Server) handleCodeAction(ctx context.Context, ls *ls.LanguageService, params *lsproto.CodeActionParams) (lsproto.CodeActionResponse, error) {
 	diagnostics := params.Context.Diagnostics
 	if len(diagnostics) == 0 {
 		return lsproto.CommandOrCodeActionArrayOrNull{}, nil
@@ -929,7 +929,7 @@ func (s *Server) handleCodeAction(ctx context.Context, languageService *ls.Langu
 	if errorCode == nil {
 		return lsproto.CommandOrCodeActionArrayOrNull{}, nil
 	}
-	return languageService.ProvideCodeActions(ctx, params.TextDocumentURI(), params.Range, *errorCode)
+	return ls.ProvideCodeActions(ctx, params)
 }
 
 func (s *Server) Log(msg ...any) {

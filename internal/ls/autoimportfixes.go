@@ -12,6 +12,7 @@ import (
 	"github.com/microsoft/typescript-go/internal/core"
 	"github.com/microsoft/typescript-go/internal/debug"
 	"github.com/microsoft/typescript-go/internal/diagnostics"
+	"github.com/microsoft/typescript-go/internal/lsp/lsproto"
 	"github.com/microsoft/typescript-go/internal/scanner"
 	"github.com/microsoft/typescript-go/internal/stringutil"
 	"github.com/microsoft/typescript-go/internal/tspath"
@@ -131,18 +132,20 @@ func (ct *changeTracker) doAddExistingFix(
 				// 	nonsense. So if there are existing specifiers, even if we know the sorting preference, we
 				// 	need to ensure that the existing specifiers are sorted according to the preference in order
 				// 	to do a sorted insertion.
-				//     if we're promoting the clause from type-only, we need to transform the existing imports before attempting to insert the new named imports
-				//     transformedExistingSpecifiers := existingSpecifiers
-				// 	if promoteFromTypeOnly && existingSpecifiers {
-				// 		transformedExistingSpecifiers = ct.NodeFactory.updateNamedImports(
-				// 			importClause.NamedBindings.AsNamedImports(),
-				// 			core.SameMap(existingSpecifiers, func(e *ast.ImportSpecifier) *ast.ImportSpecifier {
-				// 				return ct.NodeFactory.updateImportSpecifier(e, /*isTypeOnly*/ true, e.propertyName, e.name)
-				// 			}),
-				// 		).elements
-				// 	}
+
+				// todo: do we need this change for any test fixes?
+				// if we're promoting the clause from type-only, we need to transform the existing imports before attempting to insert the new named imports
+				transformedExistingSpecifiers := existingSpecifiers
+				if promoteFromTypeOnly && len(existingSpecifiers) > 0 {
+					transformedExistingSpecifiers = ct.NodeFactory.UpdateNamedImports(
+						importClause.NamedBindings.AsNamedImports(),
+						ct.NewNodeList(core.SameMap(existingSpecifiers, func(e *ast.Node) *ast.Node {
+							return ct.NodeFactory.UpdateImportSpecifier(e.AsImportSpecifier() /*isTypeOnly*/, true, e.PropertyName(), e.Name())
+						})),
+					).Elements()
+				}
 				for _, spec := range newSpecifiers {
-					insertionIndex := getImportSpecifierInsertionIndex(existingSpecifiers, spec, specifierComparer)
+					insertionIndex := getImportSpecifierInsertionIndex(transformedExistingSpecifiers, spec, specifierComparer)
 					ct.insertImportSpecifierAtIndex(sourceFile, spec, importClause.NamedBindings, insertionIndex)
 				}
 			} else if len(existingSpecifiers) > 0 && isSorted.IsTrue() {
@@ -252,7 +255,7 @@ func (ct *changeTracker) insertImports(sourceFile *ast.SourceFile, imports []*as
 			})
 			if insertionIndex == 0 {
 				// If the first import is top-of-file, insert after the leading comment which is likely the header
-				ct.insertNodeAt(sourceFile, core.TextPos(astnav.GetStartOfNode(existingImportStatements[0], sourceFile, false)), newImport.AsNode(), changeNodeOptions{})
+				ct.insertNodeBefore(sourceFile, existingImportStatements[0], newImport /*blankLineBetween*/, false)
 			} else {
 				prevImport := existingImportStatements[insertionIndex-1]
 				ct.insertNodeAfter(sourceFile, prevImport.AsNode(), newImport.AsNode())
@@ -386,12 +389,16 @@ func (l *LanguageService) sortFixInfo(fixes []*FixInfo, sourceFile *ast.SourceFi
 	_toPath := func(fileName string) tspath.Path {
 		return tspath.ToPath(fileName, program.GetCurrentDirectory(), program.UseCaseSensitiveFileNames())
 	}
-	sort.Slice(fixes, func(i, j int) bool {
-		return compareBooleans(
+	sort.SliceStable(fixes, func(i, j int) bool {
+		if cmp := compareBooleans(
 			fixes[i].isJsxNamespaceFix != nil && *fixes[i].isJsxNamespaceFix,
-			fixes[j].isJsxNamespaceFix != nil && *fixes[j].isJsxNamespaceFix) < 0 ||
-			compareValues(int(fixes[i].fix.kind), int(fixes[j].fix.kind)) < 0 ||
-			l.compareModuleSpecifiers(fixes[i].fix, fixes[j].fix, sourceFile, packageJsonImportFilter.allowsImportingSpecifier, _toPath) < 0
+			fixes[j].isJsxNamespaceFix != nil && *fixes[j].isJsxNamespaceFix); cmp != 0 {
+			return cmp < 0
+		}
+		if cmp := compareValues(int(fixes[i].fix.kind), int(fixes[j].fix.kind)); cmp != 0 {
+			return cmp < 0
+		}
+		return l.compareModuleSpecifiers(fixes[i].fix, fixes[j].fix, sourceFile, packageJsonImportFilter.allowsImportingSpecifier, _toPath) < 0
 	})
 	return fixes
 }
@@ -478,39 +485,60 @@ func getUmdSymbol(token *ast.Node, ch *checker.Checker) *ast.Symbol {
 	return nil
 }
 
+func (l *LanguageService) getSymbolNamesToImport(sourceFile *ast.SourceFile, ch *checker.Checker, symbolToken *ast.IdentifierNode, compilerOptions *core.CompilerOptions) []string {
+	parent := symbolToken.Parent
+	if (ast.IsJsxOpeningLikeElement(parent) || ast.IsJsxClosingElement(parent)) && parent.TagName() == symbolToken && jsxModeNeedsExplicitImport(compilerOptions.Jsx) {
+		jsxNamespace := ch.GetJsxNamespace(sourceFile.AsNode())
+		if needsJsxNamespaceFix(jsxNamespace, symbolToken, ch) {
+			needsComponentNameFix := !scanner.IsIntrinsicJsxName(symbolToken.Text()) && ch.ResolveName(
+				symbolToken.Text(),
+				symbolToken,
+				ast.SymbolFlagsValue,
+				/*excludeGlobals*/ false,
+			) == nil
+			if needsComponentNameFix {
+				return []string{symbolToken.Text(), jsxNamespace}
+			}
+			return []string{jsxNamespace}
+		}
+	}
+	return []string{symbolToken.Text()}
+}
+
 func (l *LanguageService) getFixesInfoForNonUMDImport(
 	ctx context.Context,
 	ch *checker.Checker,
 	sourceFile *ast.SourceFile,
 	symbolToken *ast.Identifier,
 ) []*FixInfo {
-	symbolName := symbolToken.Text
-	// "default" is a keyword and not a legal identifier for the import, but appears as an identifier.
-	if symbolName == ast.InternalSymbolNameDefault {
-		return []*FixInfo{}
-	}
-	isValidTypeOnlyUseSite := ast.IsValidTypeOnlyAliasUseSite(symbolToken.AsNode())
-	useRequire := getShouldUseRequire(sourceFile, l.GetProgram())
-	exportInfosMap := l.getExportInfosMap(symbolName, ast.IsJsxTagName(symbolToken.AsNode()), getMeaningFromLocation(symbolToken.AsNode()), sourceFile, ctx, ch, l.GetProgram().Options())
-	result := []*FixInfo{}
-	for values := range exportInfosMap.Values() {
-		_, fixes := l.getImportFixes(ch,
-			values,
-			ptrTo(l.converters.PositionToLineAndCharacter(sourceFile, core.TextPos(symbolToken.Loc.Pos()))),
-			ptrTo(isValidTypeOnlyUseSite),
-			ptrTo(useRequire),
-			sourceFile,
-			false /* fromCacheOnly */)
-		for _, fix := range fixes {
-			result = append(result, &FixInfo{
-				fix:                 fix,
-				symbolName:          symbolName,
-				errorIdentifierText: ptrTo(symbolToken.Text),
-				isJsxNamespaceFix:   ptrTo(symbolName != symbolToken.Text),
-			})
+	return core.FlatMap(getSymbolNamesToImport(sourceFile, ch, symbolToken.AsNode(), l.GetProgram().Options()), func(symbolName string) []*FixInfo {
+		// "default" is a keyword and not a legal identifier for the import, but appears as an identifier.
+		if symbolName == ast.InternalSymbolNameDefault {
+			return nil
 		}
-	}
-	return result
+		isValidTypeOnlyUseSite := ast.IsValidTypeOnlyAliasUseSite(symbolToken.AsNode())
+		useRequire := getShouldUseRequire(sourceFile, l.GetProgram())
+		exportInfosMap := l.getExportInfosMap(symbolName, ast.IsJsxTagName(symbolToken.AsNode()), getMeaningFromLocation(symbolToken.AsNode()), sourceFile, ctx, ch, l.GetProgram().Options())
+		result := []*FixInfo{}
+		for values := range exportInfosMap.Values() {
+			_, fixes := l.getImportFixes(ch,
+				values,
+				ptrTo(l.converters.PositionToLineAndCharacter(sourceFile, core.TextPos(symbolToken.Loc.Pos()))),
+				ptrTo(isValidTypeOnlyUseSite),
+				ptrTo(useRequire),
+				sourceFile,
+				false /* fromCacheOnly */)
+			for _, fix := range fixes {
+				result = append(result, &FixInfo{
+					fix:                 fix,
+					symbolName:          symbolName,
+					errorIdentifierText: ptrTo(symbolToken.Text),
+					isJsxNamespaceFix:   ptrTo(symbolName != symbolToken.Text),
+				})
+			}
+		}
+		return result
+	})
 }
 
 func getTypeOnlyPromotionFix(ch *checker.Checker, sourceFile *ast.SourceFile, symbolToken *ast.IdentifierNode, symbolName string) *ImportFix /*FixPromoteTypeOnlyImport*/ {
@@ -581,3 +609,99 @@ func compareValues(a, b int) int {
 	}
 	return 1
 }
+
+func getTypeKeywordOfTypeOnlyImport(importClause *ast.Node) *ast.Node {
+	debug.Assert(importClause.AsImportClause().IsTypeOnly())
+	firstChild := importClause.Children().Nodes[0]
+	if ast.IsTypeKeywordToken(firstChild) {
+		return firstChild
+	}
+	panic("Expected first child to be TypeKeywordToken, got: " + firstChild.Kind.String())
+}
+
+func RegisterAutoImportCodeFix(c *CodeFixProvider) {
+	errorCodes := []int32{
+		diagnostics.Cannot_find_name_0.Code(),
+		diagnostics.Cannot_find_name_0_Did_you_mean_1.Code(),
+		diagnostics.Cannot_find_name_0_Did_you_mean_the_instance_member_this_0.Code(),
+		diagnostics.Cannot_find_name_0_Did_you_mean_the_static_member_1_0.Code(),
+		diagnostics.Cannot_find_namespace_0.Code(),
+		diagnostics.X_0_refers_to_a_UMD_global_but_the_current_file_is_a_module_Consider_adding_an_import_instead.Code(),
+		diagnostics.X_0_only_refers_to_a_type_but_is_being_used_as_a_value_here.Code(),
+		diagnostics.No_value_exists_in_scope_for_the_shorthand_property_0_Either_declare_one_or_provide_an_initializer.Code(),
+		diagnostics.X_0_cannot_be_used_as_a_value_because_it_was_imported_using_import_type.Code(),
+		diagnostics.Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_jQuery_Try_npm_i_save_dev_types_Slashjquery.Code(),
+		diagnostics.Cannot_find_name_0_Do_you_need_to_change_your_target_library_Try_changing_the_lib_compiler_option_to_1_or_later.Code(),
+		diagnostics.Cannot_find_name_0_Do_you_need_to_change_your_target_library_Try_changing_the_lib_compiler_option_to_include_dom.Code(),
+		diagnostics.Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_a_test_runner_Try_npm_i_save_dev_types_Slashjest_or_npm_i_save_dev_types_Slashmocha_and_then_add_jest_or_mocha_to_the_types_field_in_your_tsconfig.Code(),
+		diagnostics.Cannot_find_name_0_Did_you_mean_to_write_this_in_an_async_function.Code(),
+		diagnostics.Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_jQuery_Try_npm_i_save_dev_types_Slashjquery_and_then_add_jquery_to_the_types_field_in_your_tsconfig.Code(),
+		diagnostics.Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_a_test_runner_Try_npm_i_save_dev_types_Slashjest_or_npm_i_save_dev_types_Slashmocha.Code(),
+		diagnostics.Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_node_Try_npm_i_save_dev_types_Slashnode.Code(),
+		diagnostics.Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_node_Try_npm_i_save_dev_types_Slashnode_and_then_add_node_to_the_types_field_in_your_tsconfig.Code(),
+		diagnostics.Cannot_find_namespace_0_Did_you_mean_1.Code(),
+		diagnostics.Cannot_extend_an_interface_0_Did_you_mean_implements.Code(),
+		diagnostics.This_JSX_tag_requires_0_to_be_in_scope_but_it_could_not_be_found.Code(),
+	}
+	c.RegisterCodeFix(&CodeFixRegistration{
+		errorCodes: errorCodes,
+		getCodeActions: GetCodeActions,
+		fixIds:         []string{"fixMissingImport"},
+	})
+}
+
+func GetCodeActions(l *LanguageService, ctx context.Context, documentURI lsproto.DocumentUri, documentPosition lsproto.Range, errorCode int32) *[]lsproto.CommandOrCodeAction {
+	_, file := l.getProgramAndFile(documentURI)
+	position := int(l.converters.LineAndCharacterToPosition(file, documentPosition.Start))
+	info := l.getFixInfos(ctx, errorCode, file, position)
+	result := core.Map(info, func(fix *FixInfo) lsproto.CommandOrCodeAction {
+		action := l.codeActionForFix(
+			ctx,
+			file,
+			fix.symbolName,
+			fix.fix,
+			/*includeSymbolNameInDescription*/ fix.errorIdentifierText == nil || fix.symbolName != *fix.errorIdentifierText)
+		kind := lsproto.CodeActionKindQuickFix
+		codeAction := &lsproto.CodeAction{
+			Title: action.description,
+			Kind:  &kind,
+			Edit: &lsproto.WorkspaceEdit{
+				Changes: &map[lsproto.DocumentUri][]*lsproto.TextEdit{
+					documentURI: action.changes,
+				},
+			},
+		}
+		return lsproto.CommandOrCodeAction{
+			Command:    nil,
+			CodeAction: codeAction,
+		}
+	})
+	return &result
+}
+
+// registerCodeFix({
+//     errorCodes,
+//     getCodeActions(context) {
+//         const { errorCode, preferences, sourceFile, span, program } = context;
+//         const info = getFixInfos(context, errorCode, span.start, /*useAutoImportProvider*/ true);
+//         if (!info) return undefined;
+//         return info.map(({ fix, symbolName, errorIdentifierText }) =>
+//             codeActionForFix(
+//                 context,
+//                 sourceFile,
+//                 symbolName,
+//                 fix,
+//                 /*includeSymbolNameInDescription*/ symbolName !== errorIdentifierText,
+//                 program,
+//                 preferences,
+//             )
+//         );
+//     },
+//     fixIds: [importFixId],
+//     getAllCodeActions: context => {
+//         const { sourceFile, program, preferences, host, cancellationToken } = context;
+//         const importAdder = createImportAdderWorker(sourceFile, program, /*useAutoImportProvider*/ true, preferences, host, cancellationToken);
+//         eachDiagnostic(context, errorCodes, diag => importAdder.addImportFromDiagnostic(diag, context));
+//         return createCombinedCodeActions(textChanges.ChangeTracker.with(context, importAdder.writeFixes));
+//     },
+// });
