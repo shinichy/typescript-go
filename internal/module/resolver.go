@@ -2135,12 +2135,11 @@ func (e *ResolvedEntrypoint) SymlinkOrRealpath() string {
 }
 
 func (r *Resolver) GetEntrypointsFromPackageJsonInfo(packageJson *packagejson.InfoCacheEntry, packageName string) []*ResolvedEntrypoint {
-	extensions := extensionsTypeScript | extensionsDeclaration
-	features := NodeResolutionFeaturesAll
+	extensions := extensionsTypeScript | extensionsDeclaration | extensionsJavaScript
+	features := getNodeResolutionFeatures(r.compilerOptions)
 	state := &resolutionState{resolver: r, extensions: extensions, features: features, compilerOptions: r.compilerOptions}
-	if packageJson.Exists() && packageJson.Contents.Exports.IsPresent() {
-		entrypoints := state.loadEntrypointsFromExportMap(packageJson, packageName, packageJson.Contents.Exports)
-		return entrypoints
+	if packageJson.Exists() && packageJson.Contents.Exports.IsPresent() && features&NodeResolutionFeaturesExports != 0 {
+		return state.loadEntrypointsFromExportMap(packageJson, packageName, packageJson.Contents.Exports)
 	}
 
 	var result []*ResolvedEntrypoint
@@ -2148,16 +2147,6 @@ func (r *Resolver) GetEntrypointsFromPackageJsonInfo(packageJson *packagejson.In
 		extensions,
 		packageJson.PackageDirectory,
 		packageJson,
-	)
-
-	otherFiles := vfsmatch.ReadDirectory(
-		r.host.FS(),
-		r.host.GetCurrentDirectory(),
-		packageJson.PackageDirectory,
-		extensions.Array(),
-		[]string{"node_modules"},
-		[]string{"**/*"},
-		vfsmatch.UnlimitedDepth,
 	)
 
 	if mainResolution.isResolved() {
@@ -2169,6 +2158,20 @@ func (r *Resolver) GetEntrypointsFromPackageJsonInfo(packageJson *packagejson.In
 			EndingFixed,
 		))
 	}
+
+	if packageJson.Exists() && packageJson.Contents.Exports.IsPresent() {
+		return result
+	}
+
+	otherFiles := vfsmatch.ReadDirectory(
+		r.host.FS(),
+		r.host.GetCurrentDirectory(),
+		packageJson.PackageDirectory,
+		extensions.Array(),
+		[]string{"node_modules"},
+		[]string{"**/*"},
+		vfsmatch.UnlimitedDepth,
+	)
 
 	comparePathsOptions := tspath.ComparePathsOptions{UseCaseSensitiveFileNames: r.host.FS().UseCaseSensitiveFileNames()}
 	for _, file := range otherFiles {

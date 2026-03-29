@@ -675,6 +675,13 @@ func (b *registryBuilder) updateIndexes(ctx context.Context, change RegistryChan
 		return
 	}
 
+	var compilerOptions *core.CompilerOptions
+	if program := b.host.GetProgramForProject(projectPath); program != nil {
+		compilerOptions = program.Options()
+	} else {
+		compilerOptions = core.EmptyCompilerOptions
+	}
+
 	var wg sync.WaitGroup
 
 	// Compute resolved package names and project reference output mappings for all projects upfront.
@@ -774,7 +781,7 @@ func (b *registryBuilder) updateIndexes(ctx context.Context, change RegistryChan
 						if ctx.Err() != nil {
 							return
 						}
-						result := b.extractPackage(ctx, pkg.packageJson, pkg.packageName, projectReferenceOutputs, fileExcludePatterns)
+						result := b.extractPackage(ctx, pkg.packageJson, pkg.packageName, compilerOptions, projectReferenceOutputs, fileExcludePatterns)
 						if result != nil {
 							extractionMu.Lock()
 							extractionCache[pkg.realpath] = result
@@ -792,7 +799,7 @@ func (b *registryBuilder) updateIndexes(ctx context.Context, change RegistryChan
 						if ctx.Err() != nil {
 							return
 						}
-						result := b.extractPackage(ctx, pkg.typesPackageJson, pkg.packageName, projectReferenceOutputs, fileExcludePatterns)
+						result := b.extractPackage(ctx, pkg.typesPackageJson, pkg.packageName, compilerOptions, projectReferenceOutputs, fileExcludePatterns)
 						if result != nil {
 							extractionMu.Lock()
 							extractionCache[pkg.typesRealpath] = result
@@ -815,7 +822,7 @@ func (b *registryBuilder) updateIndexes(ctx context.Context, change RegistryChan
 			if ctx.Err() != nil {
 				return
 			}
-			result := b.extractPackage(ctx, pkg.typesPackageJson, pkg.packageName, projectReferenceOutputs, fileExcludePatterns)
+			result := b.extractPackage(ctx, pkg.typesPackageJson, pkg.packageName, compilerOptions, projectReferenceOutputs, fileExcludePatterns)
 			if result != nil {
 				extractionMu.Lock()
 				extractionCache[pkg.typesRealpath] = result
@@ -920,7 +927,7 @@ func (b *registryBuilder) updateIndexes(ctx context.Context, change RegistryChan
 			}
 		}
 		if len(rootFiles) > 0 {
-			moduleResolver := module.NewResolverWithOptions(b.host, core.EmptyCompilerOptions, "", "", b.resolverOptions)
+			moduleResolver := module.NewResolverWithOptions(b.host, compilerOptions, "", "", b.resolverOptions)
 			aliasResolver := newAliasResolver(
 				slices.Collect(maps.Values(rootFiles)),
 				nil,
@@ -1248,6 +1255,7 @@ func (b *registryBuilder) extractPackage(
 	ctx context.Context,
 	packageJson *packagejson.InfoCacheEntry,
 	packageName string,
+	compilerOptions *core.CompilerOptions,
 	projectReferenceOutputs map[tspath.Path]string,
 	fileExcludePatterns *vfsmatch.SpecMatcher,
 ) *perPackageExtractionResult {
@@ -1255,7 +1263,7 @@ func (b *registryBuilder) extractPackage(
 		return nil
 	}
 	toRealpath, toSymlink := getPackageRealpathFuncs(b.host.FS(), packageJson.PackageDirectory)
-	resolver := getModuleResolver(b.host, toRealpath, b.resolverOptions)
+	resolver := getModuleResolver(b.host, toRealpath, b.resolverOptions, compilerOptions)
 	packageEntrypoints := resolver.GetEntrypointsFromPackageJsonInfo(packageJson, packageName)
 	if packageEntrypoints == nil {
 		return nil
