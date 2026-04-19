@@ -239,8 +239,11 @@ func addPackageJsonDependencies(contents *packagejson.PackageJson, deps *collect
 }
 
 // getPackageRealpathFuncs returns functions to transform between symlink and realpath for files within a package.
-// It calls FS.Realpath once per package directory and uses string replacement for files,
-// avoiding expensive realpath syscalls for each file.
+// It calls FS.Realpath once per package directory and uses string replacement for files within the package,
+// avoiding expensive realpath syscalls for each file. For files outside the package (e.g. node_modules
+// symlinks), it delegates to fs.Realpath to ensure symlinks are properly followed — otherwise the module
+// resolver would use symlink paths as cache keys, causing the same file to be loaded multiple times via
+// different paths (e.g. once through a package's node_modules symlink and once at the realpath).
 func getPackageRealpathFuncs(fs vfs.FS, packageDir string) (toRealpath, toSymlink func(string) string) {
 	realPackageDir := fs.Realpath(packageDir)
 	if realPackageDir == packageDir {
@@ -252,7 +255,7 @@ func getPackageRealpathFuncs(fs vfs.FS, packageDir string) (toRealpath, toSymlin
 		if after, ok := strings.CutPrefix(fileName, packageDir); ok {
 			return realPackageDir + after
 		}
-		return fileName
+		return fs.Realpath(fileName)
 	}
 	toSymlink = func(fileName string) string {
 		if after, ok := strings.CutPrefix(fileName, realPackageDir); ok {
